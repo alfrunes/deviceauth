@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
@@ -911,6 +912,94 @@ func TestApiV2GetDevice(t *testing.T) {
 
 			apih := makeMockApiHandler(t, da, nil)
 			runTestRequest(t, apih, tc.req, tc.code, tc.body)
+		})
+	}
+}
+
+func TestInternalGetDevice(t *testing.T) {
+	t.Parallel()
+
+	// enforce specific field naming in errors returned by API
+	updateRestErrorFieldName()
+
+	dev := &model.Device{
+		Id:     "foo",
+		IdData: `{"mac": "00:00:00:01"}`,
+		IdDataStruct: map[string]interface{}{
+			"mac": "00:00:00:01",
+		},
+		PubKey: "pubkey",
+		Status: model.DevStatusPending,
+		AuthSets: []model.AuthSet{
+			{
+				Id:       "1",
+				DeviceId: "foo",
+				IdData:   `{"mac": "00:00:00:01"}`,
+				IdDataStruct: map[string]interface{}{
+					"mac": "00:00:00:01",
+				},
+			},
+		},
+	}
+
+	apiDev, _ := deviceV2FromDbModel(dev)
+
+	tcases := []struct {
+		req *http.Request
+
+		device *model.Device
+		err    error
+
+		code int
+		body string
+	}{
+		{
+			req: test.MakeSimpleRequest("GET",
+				"http://1.2.3.4/api/internal/v1/devauth/tenants/foo/devices/foo", nil),
+			device: dev,
+			err:    nil,
+
+			code: http.StatusOK,
+			body: string(asJSON(apiDev)),
+		},
+		{
+			req: test.MakeSimpleRequest("GET",
+				"http://1.2.3.4/api/internal/v1/devauth/tenants/foo/devices/bar", nil),
+			device: nil,
+			err:    store.ErrDevNotFound,
+
+			code: http.StatusNotFound,
+			body: RestError("device not found"),
+		},
+		{
+			req: test.MakeSimpleRequest("GET",
+				"http://1.2.3.4/api/internal/v1/devauth/tenants/foo/devices/bar", nil),
+			device: nil,
+			err:    errors.New("generic error"),
+
+			code: http.StatusInternalServerError,
+			body: RestError("internal error"),
+		},
+	}
+
+	for i := range tcases {
+		tc := tcases[i]
+
+		t.Run(fmt.Sprintf("tc %d", i), func(t *testing.T) {
+			tc.req.Header.Set("X-MEN-RequestID", "test")
+
+			da := &mocks.App{}
+			da.On("GetDevice",
+				mtest.ContextMatcher(),
+				mock.AnythingOfType("string")).
+				Return(tc.device, tc.err)
+
+			apih := makeMockApiHandler(t, da, nil)
+			w := httptest.NewRecorder()
+			apih.ServeHTTP(w, tc.req)
+
+			assert.Equal(t, tc.code, w.Code)
+			assert.JSONEq(t, tc.body, w.Body.String())
 		})
 	}
 }

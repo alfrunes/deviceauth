@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/mendersoftware/go-lib-micro/identity"
+	"github.com/mendersoftware/go-lib-micro/requestid"
 
 	"github.com/ant0ine/go-json-rest/rest"
 	ctxhttpheader "github.com/mendersoftware/go-lib-micro/context/httpheader"
@@ -46,8 +47,9 @@ const (
 	uriTenantLimit        = "/api/internal/v1/devauth/tenant/:id/limits/:name"
 	uriTokens             = "/api/internal/v1/devauth/tokens"
 	uriTenants            = "/api/internal/v1/devauth/tenants"
-	uriTenantDeviceStatus = "/api/internal/v1/devauth/tenants/:tid/devices/:did/status"
 	uriTenantDevices      = "/api/internal/v1/devauth/tenants/:tid/devices"
+	uriTenantDevice       = "/api/internal/v1/devauth/tenants/:tid/devices/:did"
+	uriTenantDeviceStatus = "/api/internal/v1/devauth/tenants/:tid/devices/:did/status"
 
 	// management API v2
 	v2uriDevices             = "/api/management/v2/devauth/devices"
@@ -104,6 +106,7 @@ func (d *DevAuthApiHandlers) GetApp() (rest.App, error) {
 		rest.Post(uriTenants, d.ProvisionTenantHandler),
 		rest.Get(uriTenantDeviceStatus, d.GetTenantDeviceStatus),
 		rest.Get(uriTenantDevices, d.GetTenantDevicesHandler),
+		rest.Get(uriTenantDevice, d.GetTenantDeviceHandler),
 
 		// API v2
 		rest.Get(v2uriDevicesCount, d.GetDevicesCountHandler),
@@ -711,6 +714,36 @@ func (d *DevAuthApiHandlers) GetTenantDevicesHandler(w rest.ResponseWriter, r *r
 	r.Request = r.WithContext(ctx)
 
 	d.GetDevicesV2Handler(w, r)
+}
+
+func (d *DevAuthApiHandlers) GetTenantDeviceHandler(w rest.ResponseWriter, r *rest.Request) {
+	ctx := r.Context()
+	l := log.FromContext(ctx)
+	tenantID := r.PathParam("tid")
+	deviceID := r.PathParam("did")
+	ctx = identity.WithContext(ctx, &identity.Identity{
+		Tenant: tenantID,
+	})
+
+	dev, err := d.devAuth.GetDevice(ctx, deviceID)
+	if err != nil {
+		switch errors.Cause(err) {
+		case store.ErrDevNotFound:
+			w.WriteHeader(http.StatusNotFound)
+			w.WriteJson(rest_utils.ApiError{
+				Err:   err.Error(),
+				ReqId: requestid.GetReqId(r),
+			})
+			return
+		default:
+			rest_utils.RestErrWithLogInternal(w, r, l, err)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	apiDev, _ := deviceV2FromDbModel(dev)
+	w.WriteJson(apiDev)
+
 }
 
 // Validate status.
